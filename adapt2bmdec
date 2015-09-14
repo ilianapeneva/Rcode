@@ -1,0 +1,221 @@
+####################################################################################################################################################################
+############ A Randomised Stratified Design for Time-to-Event Endpoints ############################################################################################
+## For a given clinical setting, design and accrual parameters the programs provides the probability of making one of 
+## the following 3 recommendations for further development:
+## 1) No further testing
+## 2) Biomarker-enrichment Phase III design
+## 3) Drop biomarker- use a standard Phase III design
+#####################################################################################################################################################################
+
+# clinical setting parameters
+# prev.p    prevalence of the biomarker among patients with available biomarker status
+# pfsbp1    target median pfs for biomarker-positive patients on the experimental arm (months)
+# pfsbn1    target median pfs for biomarker-negative patients on the experimental arm (months)
+# pfsbp0    assumed median pfs for biomarker-positive patients on the control arm (months)
+# pfsbn0    assumed median pfs for biomarker-negative patients on the control arm (months)
+
+# design parameters
+# pv.bn     significance level for biomarker-negative subgroup in Stage 1  (default .05)
+# pv.bp     significance level for biomarker-positive subgroup in Stage 1  (default .05)
+
+# accrual parameters
+# ssbp      minimum sample size for biomarker-positive subgroup 
+# ssbp.max  maximum sample size biomarker-positive subgroup  
+# ssbn      the maximum accrual number in biomarker-negative subgroup, accrual to biomarker-negative 
+# acr.r     accrual rate (patients per month)
+#######################################################################################################################################################################
+
+library(survival)
+
+adapt2bmdec<-function(prev.p,ssbp,ssbn,pfsbp1,pfsbp0,pfsbn1,pfsbn0,acr.r,pv.bp,pv.bn,nsim=10000){
+  
+  set.seed(179)  # set seed for random number generation
+  
+  ss<-ssbp+ssbn   # total sample size
+  ssmax<- floor(4*ssbp/prev.p)
+  tms0<-matrix(0,ssmax,12)
+  
+  stand.3route1 <- matrix(0,nsim,1) # variable to count the number of times we recommend standard Phase III (i.e. no use of biomarker)
+  enrich.3route1 <- matrix(0,nsim,1) # recommend enriched Phase III design following recruitment in both groups
+  no.goroute1 <- matrix(0,nsim,1) # recommend no further testing following recruitment in both groups
+  enrich.3route2 <- matrix(0,nsim,1) # recommend enriched Phase III design following recruitment in the biomarker-positive group
+  no.goroute2 <- matrix(0,nsim,1) # recommend no further testing following recruitment in the biomarker-positive group
+  no.gointerim <- matrix(0,nsim,1) # recommend stopping for futility after the interim analysis
+  
+  pvec<-matrix (0,nsim,12) # matrix to record the p-values from the logrank tests
+
+  for (isim in 1:nsim)  {
+    tms<-tms0
+    
+    tms[1:ssmax,3]<-runif(ssmax)*ssmax/acr.r #patient entry times 
+
+    tms[1:ssmax,2]<-rbinom(ssmax,1,prev.p) # assign biomarker status; 1 = biomarker-positive, 0 = biomarker-negative
+    
+    #order by entry times in each biomarker group
+    tv1<-tms[tms[,2]==1,]                 # B+ group
+    tv1<-tv1[order(tv1[,3]),]
+    
+    tv2<-tms[tms[,2]==0,]                 # B- group
+    tv2<-tv2[order(tv2[,3]),]
+    
+    # treatment assignment stratified by biomarker
+    tv1[1+c(0:(dim(tv1)[1]/2-1))*2,1]<-1   # experimental treatment to B+ group
+    tv2[1+c(0:(dim(tv2)[1]/2-1))*2,1]<-1   # experimental treatment to B- group
+    
+    #progression times 
+    tv1[tv1[,1]==0,4]<-rexp(sum(tv1[,1]==0),rate=log(2)/pfsbp0)   # progression times for the B+ control group
+    tv2[tv2[,1]==0,4]<-rexp(sum(tv2[,1]==0),rate=log(2)/pfsbn0)   # progression times for the B- control group
+    tv1[tv1[,1]==1,4]<-rexp(sum(tv1[,1]==1),rate=log(2)/pfsbp1)   # progression times for the B+ experimental group
+    tv2[tv2[,1]==1,4]<-rexp(sum(tv2[,1]==1),rate=log(2)/pfsbn1)   # progression times for the B- experimental group
+    
+    tms<-rbind(tv1[1:120,],tv2[1:120,]) # pick only the first 120 times from both groups
+    
+    #calendar event times
+    tms[,5]<-tms[,3]+tms[,4]   #entry + progression
+    
+    #order by calendar events in increasing order
+    tv<-tms[order(tms[,5]),]   
+    
+    tv1<-tv[(tv[,2]==1),]
+    tebp<-tv1[33,5]          # find the calendar time for the 33th event in the B+ group
+    
+    # time at risk at the time of the calendar event
+    tms[,6]<-pmin((tebp-tms[,3]),tms[,4])
+    
+    # censoring status at tebp
+    tms[,7]<-ifelse(((tebp-tms[,3]+.000001)>=tms[,4]),1,0)
+    
+    #B- results (First stage results)
+    tv<-survdiff(Surv(tms[121:160,6],tms[121:160,7])~tms[121:160,1])
+    pvec[isim,1]<- 1 - pchisq(tv$chisq,1)   #get the p-value for Stage 1
+    chisq1 <- tv$chisq
+    
+    #B+ results (First stage results)
+    tv<-survdiff(Surv(tms[1:40,6],tms[1:40,7])~tms[1:40,1])
+    pvec[isim,2]<- 1 - pchisq(tv$chisq,1)    #get the p-value for Stage 1
+    chisq2 <- tv$chisq
+    
+  
+    ####Interim analysis####
+    
+    
+    if(pvec[isim,1]<pv.bn){
+      #Second Stage - enroll in both subgroups
+      
+      # new progression times after the interim analysis
+      tms[tms[1:120,1]==0,8]<-rexp(sum(tms[1:120,1]==0),rate=log(2)/pfsbp0)       # progression times for the B+ control group
+      tms[tms[121:240,1]==0,8]<-rexp(sum(tms[121:240,1]==0),rate=log(2)/pfsbn0)   # progression times for the B- control group
+      tms[tms[1:120,1]==1,8]<-rexp(sum(tms[1:120,1]==1),rate=log(2)/pfsbp1)       # progression times for the B+ experimental group
+      tms[tms[121:240,1]==1,8]<-rexp(sum(tms[121:240,1]==1),rate=log(2)/pfsbn1)   # progression times for the B- experimental group
+      
+      #calendar event times
+      tms[,9]<-tms[,3]+tms[,4]+tms[,8]   # entry + progression + progression after interim analysis
+      
+      #order by calendar events 
+      #tv<-tms[order(tms[,5]),]  
+      
+      # time when required number of B+ patients was recruited 
+      tv<-tms[order(tms[,9]),]
+      tv1<-tv[(tv[,2]==1),]
+      tebp<-tv1[70,9]       
+      
+      # time at risk at the time of the calendar event
+      tms[,6]<-pmin((tebp-tms[,3]),tms[,4]+tms[,8])
+      
+      # censoring status at tebp
+      tms[,10]<-ifelse(((tebp-tms[,3]+.000001)>=tms[,4]+tms[,8]),1,0)
+      
+      #B- results 
+      tv<-survdiff(Surv(tms[121:200,6],tms[121:200,10])~tms[121:200,1])       
+      pvec[isim,3]<- 1 - pchisq(tv$chisq,1)    #get the p-value for Stage 2 unselected
+      chisq3 <- tv$chisq
+      
+      
+      #B+ results 
+      tv<-survdiff(Surv(tms[1:80,6],tms[1:80,10])~tms[1:80,1])
+      pvec[isim,4]<- 1 - pchisq(tv$chisq,1)    #get the p-value for Stage 2
+      chisq4 <- tv$chisq
+      
+      if(pvec[isim,3]< 1 - pnorm((1.6448*sqrt(70)-chisq3)/sqrt(33))){
+        stand.3route1[isim,1] <- 1
+      }
+      
+      else{
+        if(pvec[isim,4]< 1- pnorm((1.6448*sqrt(70)-chisq4)/sqrt(37))){
+          enrich.3route1[isim,1] <- 1
+        }
+        
+        else{
+          no.goroute1[isim,1] <- 1
+        }
+      }
+      
+    }
+    
+    else{ 
+      if(pvec[isim,2]<pv.bp){
+        #Second stage - enrichment
+        
+        # new progression times 
+        tms[tms[1:120,1]==0,8]<-rexp(sum(tms[1:120,1]==0),rate=log(2)/pfsbp0)       # progression times for the B+ control group
+        tms[tms[1:120,1]==1,8]<-rexp(sum(tms[1:120,1]==1),rate=log(2)/pfsbp1)       # progression times for the B+ experimental group
+        tms[tms[121:240,1]==0,8]<-rexp(sum(tms[121:240,1]==0),rate=log(2)/pfsbn0)   # progression times for the B- control group
+        tms[tms[121:240,1]==1,8]<-rexp(sum(tms[121:240,1]==1),rate=log(2)/pfsbn1)   # progression times for the B- experimental group
+        
+        #calendar event times
+        tms[,9]<-tms[,3]+tms[,4]+tms[,8]   #entry + progression + new progression
+        
+        #order by calendar events
+        #tv<-tms[order(tms[,5]),]   #order the calendar events in increasing order
+        
+        # time when required number of B+ patients was recruited (default 110 progressions)
+        tv<-tms[order(tms[,9]),]
+        tv1<-tms[(tms[,2]==1),]
+        tebp<-tv[110,9]    
+        
+        # time at risk at 
+        tms[,6]<-pmin((tebp-tms[,3]),tms[,4]+tms[,8])
+        
+        # censoring status at tebp
+        tms[,10]<-ifelse(((tebp-tms[,3]+.000001)>=tms[,4]+tms[,8]),1,0)
+        
+        tv<-survdiff(Surv(tms[1:40,6],tms[1:40,10])~tms[1:40,1])
+        pvec[isim,5]<- 1 - pchisq(tv$chisq,1)    #get the p-value for enriched Stage 2
+        chisq6 <- tv$chisq                                                                  #the logrank for the S'
+        
+        tv4<-survdiff(Surv(tms[121:160,6],tms[121:160,10])~tms[121:160,1])  #the logrank for the Sbar'
+        chisq7 <- tv4$chisq 
+        
+        p1 <- 1 - pnorm((1.6448*sqrt(70)-chisq6)/sqrt(37))
+        p2 <- 1 - pnorm((1.9545*sqrt(70)-chisq6)/sqrt(37))
+        p3 <- 1 - pnorm((1.9545*sqrt(70)-chisq7)/sqrt(33))
+        
+        p4 <- p2 + p3 - p2*p3 #CRP of the interection hypothesis
+        
+        if(pvec[isim,5]< min(p1,p4)){    
+          enrich.3route2[isim,1] <- 1
+          
+        }
+        else {
+          no.goroute2[isim,1] <- 1
+        }
+        
+      }
+      else {
+        no.gointerim[isim,1] <- 1
+      }
+      
+    }
+    
+  }
+  
+  print("A Randomised Stratified Design for Time-to-Event Endpoints")
+  print("Probability of design recommendation:")
+  
+  print(c("No further testing decision after interim analysis" ,sum(no.gointerim)/nsim))
+  print(c("Biomarker-enrichment design Route 1" ,sum(enrich.3route1)/nsim))
+  print(c("Drop Biomarker (standard phase III) Route 1",sum(stand.3route1)/nsim))
+  print(c("No further testing decision Route 1" ,sum(no.goroute1)/nsim))
+  print(c("Biomarker-enrichment design Route 2" ,sum(enrich.3route2)/nsim))
+  print(c("No further testing decision Route 2",sum(no.goroute2)/nsim))
+  }
